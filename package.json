@@ -1,0 +1,17 @@
+{
+  "name": "yt-playlist-clean",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ytm-dedupe": "src/cli.js"
+  },
+  "scripts": {
+    "scan": "node src/cli.js scan",
+    "delete": "node src/cli.js delete --apply"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0"
+  }
+}
