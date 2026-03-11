@@ -77,7 +77,6 @@ export async function listAllPlaylists(youtube, opts = {}) {
 
 export async function listPlaylistResourceIds(youtube, playlistId, progress) {
   const ids = [];
-  const progress = arguments[2];
   let pageToken;
   const seen = new Set();
   let pageCount = 0;
