@@ -81,6 +81,29 @@ function printSummary(result, mode) {
   }
 }
 
+function printProgress(ev) {
+  if (!ev) return;
+  switch (ev.stage) {
+    case 'playlistsTotal':
+      console.log(`已找到 ${ev.total} 個播放清單（包含已過濾/未過濾）`);
+      return;
+    case 'playlistPage':
+      console.log(`playlists.list 第 ${ev.page} 頁已抓取，累計 ${ev.count} 筆`);
+      return;
+    case 'playlistStart':
+      console.log(`開始抓取 Playlist ${ev.index}/${ev.total}：${ev.playlistId} (${ev.title})`);
+      return;
+    case 'playlistItemPage':
+      console.log(`  ${ev.playlistId} page ${ev.page}: 已抓 ${ev.fetched} 筆 items`);
+      return;
+    case 'playlistDone':
+      console.log(`完成 Playlist ${ev.index}/${ev.total}：${ev.playlistId}，items=${ev.itemCount}`);
+      return;
+    default:
+      return;
+  }
+}
+
 function defaultBackupPath() {
   const t = new Date().toISOString().replace(/[:.]/g, '-');
   return path.join(process.cwd(), `ytm-dedupe-backup-${t}.json`);
@@ -130,7 +153,13 @@ async function runCommand(command, options) {
   });
   const youtube = google.youtube({ version: 'v3', auth });
 
-  const result = await scanDuplicateGroups(youtube, commandOptions).catch((err) => {
+  const modeText = command === 'scan' ? 'scan' : 'delete';
+  console.log(`\n開始執行 ${modeText}，請稍候...`);
+
+  const result = await scanDuplicateGroups(youtube, {
+    ...commandOptions,
+    onProgress: printProgress,
+  }).catch((err) => {
     throw new Error(`scan 失敗：${extractApiMessage(err)}`);
   });
 

@@ -1,10 +1,17 @@
 import { createHash } from 'node:crypto';
 
 const MAX_RESULTS = 50;
+const MAX_PAGES_WARNING = 2000;
 
 function makeSignature(title, orderedIds) {
   const body = `${title}|${orderedIds.join(',')}`;
   return createHash('sha1').update(body).digest('hex');
+}
+
+function emitProgress(progress, payload) {
+  if (typeof progress === 'function') {
+    progress(payload);
+  }
 }
 
 function extractResourceKey(item) {
@@ -15,12 +22,27 @@ function extractResourceKey(item) {
   return item.id || '';
 }
 
+function safePageLoop(nextPageToken, seen) {
+  if (!nextPageToken) return false;
+  if (seen.has(nextPageToken)) return false;
+  seen.add(nextPageToken);
+  return true;
+}
+
 export async function listAllPlaylists(youtube, opts = {}) {
   const playlists = [];
   const titleFilter = opts.titleFilter;
+  const progress = opts.onProgress;
   let pageToken;
+  const seen = new Set();
+  let pageCount = 0;
 
   do {
+    pageCount += 1;
+    if (pageCount > MAX_PAGES_WARNING) {
+      throw new Error(`playlists.list 分頁超過 ${MAX_PAGES_WARNING} 頁，停止避免無窮迴圈。`);
+    }
+
     const res = await youtube.playlists.list({
       part: 'id,snippet,contentDetails',
       mine: true,
@@ -42,16 +64,30 @@ export async function listAllPlaylists(youtube, opts = {}) {
     }
 
     pageToken = res.data.nextPageToken;
-  } while (pageToken);
+    emitProgress(progress, {
+      stage: 'playlistPage',
+      page: pageCount,
+      count: playlists.length,
+      hasMore: Boolean(pageToken),
+    });
+  } while (safePageLoop(pageToken, seen));
 
   return playlists;
 }
 
-export async function listPlaylistResourceIds(youtube, playlistId) {
+export async function listPlaylistResourceIds(youtube, playlistId, progress) {
   const ids = [];
+  const progress = arguments[2];
   let pageToken;
+  const seen = new Set();
+  let pageCount = 0;
 
   do {
+    pageCount += 1;
+    if (pageCount > MAX_PAGES_WARNING) {
+      throw new Error(`playlistItems.list 分頁超過 ${MAX_PAGES_WARNING} 頁，停止避免無窮迴圈。`);
+    }
+
     const res = await youtube.playlistItems.list({
       part: 'id,snippet,contentDetails',
       playlistId,
@@ -63,19 +99,47 @@ export async function listPlaylistResourceIds(youtube, playlistId) {
       ids.push(extractResourceKey(item));
     }
     pageToken = res.data.nextPageToken;
-  } while (pageToken);
+    emitProgress(progress, {
+      stage: 'playlistItemPage',
+      playlistId,
+      page: pageCount,
+      fetched: ids.length,
+      hasMore: Boolean(pageToken),
+    });
+  } while (safePageLoop(pageToken, seen));
 
   return ids;
 }
 
 export async function scanDuplicateGroups(youtube, options = {}) {
-  const playlists = await listAllPlaylists(youtube, { titleFilter: options.title });
+  const progress = options.onProgress;
+  const playlists = await listAllPlaylists(youtube, {
+    titleFilter: options.title,
+    onProgress: (ev) => emitProgress(progress, ev),
+  });
   const validPlaylists = [];
   const itemErrors = [];
+  emitProgress(progress, {
+    stage: 'playlistsTotal',
+    total: playlists.length,
+  });
 
-  for (const playlist of playlists) {
+  for (let i = 0; i < playlists.length; i += 1) {
+    const playlist = playlists[i];
+    emitProgress(progress, {
+      stage: 'playlistStart',
+      index: i + 1,
+      total: playlists.length,
+      playlistId: playlist.playlistId,
+      title: playlist.title,
+    });
+
     try {
-      const orderedResourceIds = await listPlaylistResourceIds(youtube, playlist.playlistId);
+      const orderedResourceIds = await listPlaylistResourceIds(
+        youtube,
+        playlist.playlistId,
+        (ev) => emitProgress(progress, { ...ev, index: i + 1, total: playlists.length }),
+      );
       if (orderedResourceIds.length !== playlist.itemCount) {
         playlist.fetchedItemCount = orderedResourceIds.length;
       } else {
@@ -93,6 +157,15 @@ export async function scanDuplicateGroups(youtube, options = {}) {
         error: message,
       });
     }
+
+    emitProgress(progress, {
+      stage: 'playlistDone',
+      index: i + 1,
+      total: playlists.length,
+      playlistId: playlist.playlistId,
+      title: playlist.title,
+      itemCount: playlist.orderedResourceIds?.length || 0,
+    });
   }
 
   const groups = new Map();
@@ -103,7 +176,7 @@ export async function scanDuplicateGroups(youtube, options = {}) {
   }
 
   const duplicates = [];
-  for (const [_, playlistsWithSame] of groups.entries()) {
+  for (const playlistsWithSame of groups.values()) {
     if (playlistsWithSame.length <= 1) continue;
 
     const keepMode = options.keep || 'oldest';
@@ -115,6 +188,9 @@ export async function scanDuplicateGroups(youtube, options = {}) {
     if (withPublishedAt.length === 0) {
       const orderedByScan = [...playlistsWithSame].sort((a, b) => a.sequence - b.sequence);
       keep = orderedByScan[0];
+      if (keepMode === 'newest') {
+        keep = orderedByScan[orderedByScan.length - 1];
+      }
     } else if (keepMode === 'newest') {
       withPublishedAt.sort((a, b) => b._publishedTs - a._publishedTs);
       keep = withPublishedAt[0];
