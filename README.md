@@ -8,6 +8,10 @@
 - `itemCount` 相同
 - 內容 resource ID 列表（含順序）完全一致
 
+快速模式（可選）：
+
+- `--fast`：只比較 `title` 與 `itemCount`，不抓取 playlist 內曲目，速度較快但可能誤判
+
 預設為 `dry-run`，不會刪除；只有加上 `--apply` 才會呼叫 `playlists.delete`。
 
 `delete` 預設會優先使用本地快取，避免重複抓取所有 playlist；預設快取路徑 `~/.ytm-dedupe/scan-cache.json`，可用 `--cache` 指定，或加 `--refresh` 強制重抓。
@@ -83,6 +87,12 @@ node src/cli.js scan --refresh
 node src/cli.js scan --title "最愛搖滾"
 ```
 
+快速模式掃描（不抓取 playlistItems）：
+
+```bash
+node src/cli.js scan --fast
+```
+
 ---
 
 ## 8) 真正刪除（需明確加 `--apply`）
@@ -97,6 +107,12 @@ node src/cli.js delete --apply --refresh
 
 ```bash
 node src/cli.js delete --title "最愛搖滾" --apply
+```
+
+快速刪除流程（先以 `--title` / `--fast` 過濾）：
+
+```bash
+node src/cli.js delete --fast
 ```
 
 刪除前會先輸出一份 JSON 備份：
@@ -129,6 +145,7 @@ node src/cli.js delete --title "最愛搖滾" --apply
 - `ytm-dedupe scan`
 - `ytm-dedupe scan --title "<title>"`
 - `ytm-dedupe scan --keep oldest|newest`（目前預設 oldest）
+- `ytm-dedupe scan --fast`
 
 ### delete
 
@@ -137,6 +154,7 @@ node src/cli.js delete --title "最愛搖滾" --apply
 - `ytm-dedupe delete`
 - `ytm-dedupe delete --apply`
 - `ytm-dedupe delete --title "<title>" --apply`
+- `ytm-dedupe delete --fast`（快速流程，直接執行刪除）
 - `ytm-dedupe delete --apply --output ./backup.json`
 - `ytm-dedupe delete --cache ./my-scan-cache.json`
 
@@ -157,6 +175,13 @@ Reason:
 same title, same item count, identical ordered resource IDs
 ```
 
+快速模式輸出：
+
+```
+Reason:
+same title, same item count (fast mode, no playlistItems check)
+```
+
 最後會輸出：
 
 - 總 playlist 數
@@ -171,6 +196,7 @@ same title, same item count, identical ordered resource IDs
 - `playlists.delete` 會直接刪除 Playlist 本體與其訂閱關係，刪除後無法復原。
 - 即使 `--apply`，每筆刪除失敗也不會中斷整體流程，錯誤會列在輸出中繼續處理其他項目。
 - 請確保 OAuth 帳號有權限刪除目標 playlist（必須為該帳號擁有者）。
+- 快速模式 `--fast` 只比對「同名 + 同歌曲數」，請先用一般模式或限制 title 小範圍做確認，再用快速模式大量刪除，避免同名但內容不同的清單被誤刪。
 
 ---
 

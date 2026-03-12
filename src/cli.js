@@ -23,6 +23,10 @@ function parseOptions(argv) {
       opts.refresh = true;
       continue;
     }
+    if (key === '--fast') {
+      opts.fast = true;
+      continue;
+    }
     if (key === '--help' || key === '-h') {
       opts.help = true;
       continue;
@@ -42,12 +46,15 @@ function usage() {
   return `ytm-dedupe: 清理 YouTube / YouTube Music 重複 playlist（同名且內容完全一致）
 
 用法:
-  ytm-dedupe scan [--title <title>] [--keep oldest|newest]
-  ytm-dedupe delete [--title <title>] [--keep oldest|newest] [--apply] [--output <file>] [--cache <path>] [--refresh]
+  ytm-dedupe scan [--title <title>] [--keep oldest|newest] [--fast]
+  ytm-dedupe delete [--title <title>] [--keep oldest|newest] [--apply] [--fast] [--output <file>] [--cache <path>] [--refresh]
 
 說明:
   預設為 dry-run，不會刪除。只有加上 --apply 才會真的刪除 playlist。
-  delete 預設會優先使用本地快取：${DEFAULT_CACHE_PATH}，可用 --refresh 強制重抓。`;
+  delete 預設會優先使用本地快取：${DEFAULT_CACHE_PATH}，可用 --refresh 強制重抓。
+  加上 --fast 可改用快速流程：只以「同名 + itemCount」判定重複，不抓 playlistItems。
+  fast 模式下會直接執行刪除，不再保留預覽模式；若要保留預覽請先用 scan --fast。
+`;
 }
 
 function expandHome(input) {
@@ -98,7 +105,7 @@ function printGroup(group) {
     console.log(item.playlistId);
   }
   console.log('Reason:');
-  console.log('same title, same item count, identical ordered resource IDs');
+  console.log(group.reason || 'same title, same item count, identical ordered resource IDs');
 }
 
 function printSummary(result, mode, isApply = false) {
@@ -111,6 +118,9 @@ function printSummary(result, mode, isApply = false) {
     for (const it of result.errors.itemFetchFailures) {
       console.log(`- ${it.playlistId} (${it.title}): ${it.error}`);
     }
+  }
+  if (result.mode === 'fast') {
+    console.log('\n目前使用快速模式：依「同名 + itemCount」判斷重複（未比對播放清單內容順序）。');
   }
   if (mode === 'delete' && !isApply) {
     console.log('\n目前為 dry-run，未加 --apply 不會刪除。');
@@ -195,7 +205,8 @@ async function loadOrCreateScanResult(commandOptions, cachePath, forceRefresh) {
   const preferCache = !forceRefresh;
   if (preferCache) {
     const cached = await loadCachedResult(cachePath);
-    if (cached?.duplicates) return cached;
+    const mode = commandOptions.fast ? 'fast' : 'full';
+    if (cached?.duplicates && cached?.mode === mode) return cached;
   }
 
   const auth = await authorize().catch((err) => {
@@ -219,6 +230,7 @@ async function runCommand(command, options) {
   const commandOptions = {
     title: options.title,
     keep: validateKeepOption(options.keep || 'oldest'),
+    fast: Boolean(options.fast),
   };
   const cachePath = getCachePath(process.env.YTM_CACHE_PATH || options.cache);
 
@@ -239,8 +251,9 @@ async function runCommand(command, options) {
   }
 
   for (const g of result.duplicates) printGroup(g);
-  printSummary(result, 'delete', options.apply);
-  if (!options.apply) return;
+  printSummary(result, 'delete', options.apply || options.fast);
+  const shouldApply = options.apply || options.fast;
+  if (!shouldApply) return;
 
   const auth = await authorize().catch((err) => {
     const msg = extractApiMessage(err);
