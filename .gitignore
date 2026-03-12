@@ -1,0 +1,5 @@
+node_modules/
+.env
+credentials.json
+ytm-dedupe-backup*.json
+.DS_Store
