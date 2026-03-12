@@ -10,6 +10,8 @@
 
 預設為 `dry-run`，不會刪除；只有加上 `--apply` 才會呼叫 `playlists.delete`。
 
+`delete` 預設會優先使用本地快取，避免重複抓取所有 playlist；預設快取路徑 `~/.ytm-dedupe/scan-cache.json`，可用 `--cache` 指定，或加 `--refresh` 強制重抓。
+
 ---
 
 ## 1) 專案安裝
@@ -72,6 +74,7 @@ cp .env.example .env
 npm run scan
 # 或
 node src/cli.js scan
+node src/cli.js scan --refresh
 ```
 
 限制單一 title 的掃描：
@@ -86,6 +89,8 @@ node src/cli.js scan --title "最愛搖滾"
 
 ```bash
 node src/cli.js delete --apply
+node src/cli.js delete --apply --cache ./my-scan-cache.json
+node src/cli.js delete --apply --refresh
 ```
 
 指定 title：
@@ -133,6 +138,7 @@ node src/cli.js delete --title "最愛搖滾" --apply
 - `ytm-dedupe delete --apply`
 - `ytm-dedupe delete --title "<title>" --apply`
 - `ytm-dedupe delete --apply --output ./backup.json`
+- `ytm-dedupe delete --cache ./my-scan-cache.json`
 
 ---
 

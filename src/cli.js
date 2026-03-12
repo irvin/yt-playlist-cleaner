@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { google } from 'googleapis';
 import dotenv from 'dotenv';
 import { authorize } from './auth.js';
 import { scanDuplicateGroups } from './scanner.js';
 
 dotenv.config();
+
+const DEFAULT_CACHE_PATH = '~/.ytm-dedupe/scan-cache.json';
 
 function parseOptions(argv) {
   const opts = {};
@@ -16,15 +19,20 @@ function parseOptions(argv) {
       opts.apply = true;
       continue;
     }
+    if (key === '--refresh') {
+      opts.refresh = true;
+      continue;
+    }
     if (key === '--help' || key === '-h') {
       opts.help = true;
       continue;
     }
-    if (key === '--title' || key === '--keep' || key === '--output') {
+    if (key === '--title' || key === '--keep' || key === '--output' || key === '--cache') {
       const value = argv[i + 1];
       if (value == null) throw new Error(`缺少參數：${key}`);
       opts[key.slice(2)] = value;
       i += 1;
+      continue;
     }
   }
   return opts;
@@ -35,11 +43,39 @@ function usage() {
 
 用法:
   ytm-dedupe scan [--title <title>] [--keep oldest|newest]
-  ytm-dedupe delete [--title <title>] [--keep oldest|newest] [--apply] [--output <file>]
+  ytm-dedupe delete [--title <title>] [--keep oldest|newest] [--apply] [--output <file>] [--cache <path>] [--refresh]
 
 說明:
   預設為 dry-run，不會刪除。只有加上 --apply 才會真的刪除 playlist。
-`;
+  delete 預設會優先使用本地快取：${DEFAULT_CACHE_PATH}，可用 --refresh 強制重抓。`;
+}
+
+function expandHome(input) {
+  if (!input) return input;
+  if (input === '~') return os.homedir();
+  if (input.startsWith(`~${path.sep}`)) {
+    return path.join(os.homedir(), input.slice(2));
+  }
+  return input;
+}
+
+function getCachePath(rawPath) {
+  return path.resolve(process.cwd(), expandHome(rawPath || DEFAULT_CACHE_PATH));
+}
+
+async function loadCachedResult(cachePath) {
+  try {
+    const raw = await fs.readFile(cachePath, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+async function saveCachedResult(cachePath, result) {
+  await fs.mkdir(path.dirname(cachePath), { recursive: true });
+  await fs.writeFile(cachePath, JSON.stringify(result, null, 2), 'utf8');
 }
 
 function extractApiMessage(error) {
@@ -65,7 +101,7 @@ function printGroup(group) {
   console.log('same title, same item count, identical ordered resource IDs');
 }
 
-function printSummary(result, mode) {
+function printSummary(result, mode, isApply = false) {
   console.log('\n=== 掃描摘要 ===');
   console.log(`總 playlist 數: ${result.totals.totalPlaylists}`);
   console.log(`重複群組數: ${result.totals.duplicateGroups}`);
@@ -76,7 +112,7 @@ function printSummary(result, mode) {
       console.log(`- ${it.playlistId} (${it.title}): ${it.error}`);
     }
   }
-  if (mode === 'delete') {
+  if (mode === 'delete' && !isApply) {
     console.log('\n目前為 dry-run，未加 --apply 不會刪除。');
   }
 }
@@ -117,6 +153,20 @@ function validateKeepOption(keepMode) {
   return keepMode;
 }
 
+function applyTitleFilter(result, title) {
+  if (!title) return result;
+  const duplicates = result.duplicates.filter((g) => g.title === title);
+  return {
+    ...result,
+    duplicates,
+    totals: {
+      ...result.totals,
+      duplicateGroups: duplicates.length,
+      toDelete: duplicates.reduce((sum, g) => sum + g.delete.length, 0),
+    },
+  };
+}
+
 async function buildReportAndMaybeWrite(result, outputPath) {
   const out = {
     generatedAt: result.generatedAt,
@@ -141,40 +191,62 @@ async function buildReportAndMaybeWrite(result, outputPath) {
   return backupPath;
 }
 
-async function runCommand(command, options) {
-  const commandOptions = {
-    title: options.title,
-    keep: validateKeepOption(options.keep || 'oldest'),
-  };
+async function loadOrCreateScanResult(commandOptions, cachePath, forceRefresh) {
+  const preferCache = !forceRefresh;
+  if (preferCache) {
+    const cached = await loadCachedResult(cachePath);
+    if (cached?.duplicates) return cached;
+  }
 
   const auth = await authorize().catch((err) => {
     const msg = extractApiMessage(err);
     throw new Error(`OAuth 失敗：${msg}`);
   });
   const youtube = google.youtube({ version: 'v3', auth });
-
-  const modeText = command === 'scan' ? 'scan' : 'delete';
-  console.log(`\n開始執行 ${modeText}，請稍候...`);
-
   const result = await scanDuplicateGroups(youtube, {
     ...commandOptions,
     onProgress: printProgress,
   }).catch((err) => {
     throw new Error(`scan 失敗：${extractApiMessage(err)}`);
   });
+  await saveCachedResult(cachePath, result).catch(() => {
+    console.warn(`無法寫入快取：${cachePath}`);
+  });
+  return result;
+}
+
+async function runCommand(command, options) {
+  const commandOptions = {
+    title: options.title,
+    keep: validateKeepOption(options.keep || 'oldest'),
+  };
+  const cachePath = getCachePath(process.env.YTM_CACHE_PATH || options.cache);
+
+  const modeText = command === 'scan' ? 'scan' : 'delete';
+  console.log(`\n開始執行 ${modeText}，請稍候...`);
+
+  const freshScanNeeded = command === 'scan' || options.refresh;
+  const result = await loadOrCreateScanResult(commandOptions, cachePath, freshScanNeeded).then((r) => {
+    if (command === 'delete' && !options.refresh) return applyTitleFilter(r, commandOptions.title);
+    return command === 'scan' ? applyTitleFilter(r, commandOptions.title) : r;
+  });
 
   if (command === 'scan') {
+    console.log(`快取已儲存：${cachePath}`);
     for (const g of result.duplicates) printGroup(g);
     printSummary(result, 'scan');
     return;
   }
 
-  // delete command
   for (const g of result.duplicates) printGroup(g);
-  printSummary(result, 'delete');
-  if (!options.apply) {
-    return;
-  }
+  printSummary(result, 'delete', options.apply);
+  if (!options.apply) return;
+
+  const auth = await authorize().catch((err) => {
+    const msg = extractApiMessage(err);
+    throw new Error(`OAuth 失敗：${msg}`);
+  });
+  const youtube = google.youtube({ version: 'v3', auth });
 
   const backupPath = await buildReportAndMaybeWrite(result, options.output).catch((err) => {
     throw new Error(`備份檔案寫入失敗：${err.message}`);
@@ -234,7 +306,7 @@ async function main() {
   }
 }
 
-main().catch(async (err) => {
+main().catch((err) => {
   console.error(`\n致命錯誤：${err.message}`);
   process.exitCode = 1;
 });
