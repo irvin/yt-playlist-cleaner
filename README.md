@@ -14,7 +14,7 @@
 
 預設為 `dry-run`，不會刪除；只有加上 `--apply` 才會呼叫 `playlists.delete`。
 
-`delete` 預設會優先使用本地快取，避免重複抓取所有 playlist；預設快取路徑 `~/.ytm-dedupe/scan-cache.json`，可用 `--cache` 指定，或加 `--refresh` 強制重抓。
+`delete` 預設會優先使用本地快取，避免重複抓取所有 playlist；預設快取路徑 `cache/scan-cache.json`，可用 `--cache` 指定，或加 `--refresh` 強制重抓。
 
 ---
 
@@ -68,7 +68,7 @@ cp .env.example .env
 首次執行 `scan` 時會要求授權，程式會輸出授權網址。
 
 請在瀏覽器開啟網址並取得授權碼，再貼回終端機。  
-取得的 token 會儲存在本機（`YTM_TOKEN_PATH`，預設 `~/.ytm-dedupe/token.json`），方便之後重複執行時不用再次授權。
+取得的 token 會儲存在本機（`YTM_TOKEN_PATH`，預設 `cache/token.json`），方便之後重複執行時不用再次授權。
 
 ---
 
@@ -115,7 +115,7 @@ node src/cli.js delete --title "最愛搖滾" --apply
 node src/cli.js delete --fast
 ```
 
-刪除流程會保留進度檔（預設 `~/.ytm-dedupe/delete-progress.json`），中斷後再次執行會自動跳過已成功刪除/已確認不存在的項目，避免重複消耗 `playlists.delete` 配額。
+刪除流程會保留進度檔（預設 `cache/delete-progress.json`），中斷後再次執行會自動跳過已成功刪除/已確認不存在的項目，避免重複消耗 `playlists.delete` 配額。
 
 刪除前會先輸出一份 JSON 備份：
 

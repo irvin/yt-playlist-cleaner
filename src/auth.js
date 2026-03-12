@@ -21,7 +21,7 @@ function resolvePath(p) {
 }
 
 function defaultTokenPath() {
-  const base = path.join(os.homedir(), '.ytm-dedupe');
+  const base = path.resolve(process.cwd(), 'cache');
   return path.join(base, 'token.json');
 }
 

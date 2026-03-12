@@ -10,8 +10,8 @@ import { scanDuplicateGroups } from './scanner.js';
 
 dotenv.config();
 
-const DEFAULT_CACHE_PATH = '~/.ytm-dedupe/scan-cache.json';
-const DEFAULT_DELETE_STATE_PATH = '~/.ytm-dedupe/delete-progress.json';
+const DEFAULT_CACHE_PATH = 'cache/scan-cache.json';
+const DEFAULT_DELETE_STATE_PATH = 'cache/delete-progress.json';
 
 function parseOptions(argv) {
   const opts = {};
