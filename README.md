@@ -115,6 +115,8 @@ node src/cli.js delete --title "最愛搖滾" --apply
 node src/cli.js delete --fast
 ```
 
+刪除流程會保留進度檔（預設 `~/.ytm-dedupe/delete-progress.json`），中斷後再次執行會自動跳過已成功刪除/已確認不存在的項目，避免重複消耗 `playlists.delete` 配額。
+
 刪除前會先輸出一份 JSON 備份：
 
 ```json
@@ -157,6 +159,7 @@ node src/cli.js delete --fast
 - `ytm-dedupe delete --fast`（快速流程，直接執行刪除）
 - `ytm-dedupe delete --apply --output ./backup.json`
 - `ytm-dedupe delete --cache ./my-scan-cache.json`
+- `ytm-dedupe delete --state ./my-delete-state.json`（自訂刪除進度檔位置）
 
 ---
 

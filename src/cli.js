@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { google } from 'googleapis';
@@ -10,6 +11,7 @@ import { scanDuplicateGroups } from './scanner.js';
 dotenv.config();
 
 const DEFAULT_CACHE_PATH = '~/.ytm-dedupe/scan-cache.json';
+const DEFAULT_DELETE_STATE_PATH = '~/.ytm-dedupe/delete-progress.json';
 
 function parseOptions(argv) {
   const opts = {};
@@ -31,7 +33,7 @@ function parseOptions(argv) {
       opts.help = true;
       continue;
     }
-    if (key === '--title' || key === '--keep' || key === '--output' || key === '--cache') {
+    if (key === '--title' || key === '--keep' || key === '--output' || key === '--cache' || key === '--state') {
       const value = argv[i + 1];
       if (value == null) throw new Error(`缺少參數：${key}`);
       opts[key.slice(2)] = value;
@@ -47,7 +49,7 @@ function usage() {
 
 用法:
   ytm-dedupe scan [--title <title>] [--keep oldest|newest] [--fast]
-  ytm-dedupe delete [--title <title>] [--keep oldest|newest] [--apply] [--fast] [--output <file>] [--cache <path>] [--refresh]
+  ytm-dedupe delete [--title <title>] [--keep oldest|newest] [--apply] [--fast] [--output <file>] [--cache <path>] [--state <file>] [--refresh]
 
 說明:
   預設為 dry-run，不會刪除。只有加上 --apply 才會真的刪除 playlist。
@@ -55,6 +57,10 @@ function usage() {
   加上 --fast 可改用快速流程：只以「同名 + itemCount」判定重複，不抓 playlistItems。
   fast 模式下會直接執行刪除，不再保留預覽模式；若要保留預覽請先用 scan --fast。
 `;
+}
+
+function getDeleteStatePath(rawPath) {
+  return path.resolve(process.cwd(), expandHome(rawPath || DEFAULT_DELETE_STATE_PATH));
 }
 
 function expandHome(input) {
@@ -83,6 +89,70 @@ async function loadCachedResult(cachePath) {
 async function saveCachedResult(cachePath, result) {
   await fs.mkdir(path.dirname(cachePath), { recursive: true });
   await fs.writeFile(cachePath, JSON.stringify(result, null, 2), 'utf8');
+}
+
+async function loadDeleteState(statePath) {
+  try {
+    const raw = await fs.readFile(statePath, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+async function saveDeleteState(statePath, state) {
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify(state, null, 2), 'utf8');
+}
+
+function buildDeleteFingerprint(result) {
+  const signatureSource = result.duplicates
+    .map((g) => {
+      const dels = g.delete.map((item) => `${item.playlistId}:${item.signature}`).sort().join(',');
+      return `${g.title}|${g.signature}|${dels}`;
+    })
+    .sort()
+    .join('\n');
+  return createHash('sha1').update(signatureSource).digest('hex');
+}
+
+function buildDeletePlan(result, cachePath) {
+  const groups = result.duplicates;
+  return {
+    generatedAt: new Date().toISOString(),
+    command: 'delete',
+    mode: result.mode,
+    cachePath,
+    fingerprint: buildDeleteFingerprint(result),
+    totals: {
+      totalPlaylists: result.totals.totalPlaylists,
+      duplicateGroups: groups.length,
+      toDelete: groups.reduce((sum, g) => sum + g.delete.length, 0),
+    },
+    targets: groups.flatMap((g) => g.delete.map((d) => ({
+      groupTitle: g.title,
+      groupSignature: g.signature,
+      playlistId: d.playlistId,
+      title: d.title,
+    }))),
+    results: {},
+  };
+}
+
+function isNotFoundError(err) {
+  const status = err?.response?.status;
+  const reason = err?.response?.data?.error?.errors?.[0]?.reason;
+  const message = (err?.response?.data?.error?.message || err?.message || '').toLowerCase();
+  return status === 404 || reason === 'notFound' || reason === 'playlistNotFound' || message.includes('not found');
+}
+
+function markDeleteProgress(state, playlistId, status, reason) {
+  state.results[playlistId] = {
+    status,
+    reason,
+    at: new Date().toISOString(),
+  };
 }
 
 function extractApiMessage(error) {
@@ -266,18 +336,54 @@ async function runCommand(command, options) {
   });
   console.log(`\n已寫入刪除前備份：${backupPath}`);
 
-  const deleteTargets = result.duplicates.flatMap((g) => g.delete);
+  const statePath = getDeleteStatePath(process.env.YTM_DELETE_STATE_PATH || options.state);
+  const newPlan = buildDeletePlan(result, cachePath);
+  const prevState = await loadDeleteState(statePath);
+  const state = prevState && prevState.fingerprint === newPlan.fingerprint
+    ? { ...prevState }
+    : newPlan;
+  state.generatedAt = newPlan.generatedAt;
+  state.fingerprint = newPlan.fingerprint;
+  state.mode = newPlan.mode;
+  state.cachePath = newPlan.cachePath;
+  state.targets = newPlan.targets;
+  if (!state.results) state.results = {};
+  await saveDeleteState(statePath, state);
+
+  const deleteTargets = state.targets.filter((item) => {
+    const r = state.results[item.playlistId];
+    return !(r && (r.status === 'done' || r.status === 'skipped'));
+  });
+
   const failures = [];
+  const skipped = [];
   let deleted = 0;
+  const alreadyDone = state.targets.length - deleteTargets.length;
+  console.log(`\n待刪除項目：${deleteTargets.length}，已完成/已跳過：${alreadyDone}`);
+
+  if (!deleteTargets.length) {
+    console.log('沒有待處理的刪除項目，本次流程直接結束。');
+    return;
+  }
+
   for (const target of deleteTargets) {
     try {
       await youtube.playlists.delete({ id: target.playlistId });
       deleted += 1;
+      markDeleteProgress(state, target.playlistId, 'done');
       console.log(`已刪除: ${target.playlistId}`);
     } catch (err) {
       const msg = extractApiMessage(err);
-      failures.push({ playlistId: target.playlistId, reason: msg });
+      const status = isNotFoundError(err) ? 'skipped' : 'failed';
+      markDeleteProgress(state, target.playlistId, status, msg);
+      if (status === 'skipped') {
+        skipped.push({ playlistId: target.playlistId, reason: msg });
+      } else {
+        failures.push({ playlistId: target.playlistId, reason: msg });
+      }
       console.error(`刪除失敗: ${target.playlistId} -> ${msg}`);
+    } finally {
+      await saveDeleteState(statePath, state);
     }
   }
 
@@ -285,7 +391,12 @@ async function runCommand(command, options) {
   if (failures.length) {
     console.log(`失敗 ${failures.length} 筆，其他項目仍會繼續處理：`);
     for (const f of failures) console.log(`- ${f.playlistId}: ${f.reason}`);
-  } else {
+  }
+  if (skipped.length) {
+    console.log(`\\n已跳過 ${skipped.length} 筆（先前已刪除）：`);
+    for (const s of skipped) console.log(`- ${s.playlistId}: ${s.reason}`);
+  }
+  if (!failures.length && !skipped.length) {
     console.log('全部刪除完成。');
   }
 }
